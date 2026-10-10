@@ -1,0 +1,97 @@
+# SPDX-FileCopyrightText: 2026 Real-Time Innovations, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+##########
+# Set up the Python environment for the tractor fleet DDS blueprint demo.
+#
+# Usage:
+#   source setup.sourceme
+#
+# Environment variables you can override:
+#   PYTHON         – Python interpreter (default: python3)
+#   VENV_DIR       – venv directory name (default: venv)
+#   NDDSHOME       – RTI Connext DDS installation directory (optional;
+#                    auto-detected in /Applications, /opt, or $HOME). The
+#                    demo runs from the rti.connext pip package; the
+#                    installation adds rtiddsgen and RTI Persistence Service.
+
+# This file is sourced, not executed. Never use set -e/-u/-o pipefail at the
+# top level — those options propagate to the interactive shell and cause it to
+# exit on any error. We use explicit error checking instead.
+
+# Find repo root as the directory containing this file (works in bash and zsh)
+if [ -n "${BASH_SOURCE[0]+x}" ]; then
+  REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+  REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+fi
+cd "$REPO_ROOT"
+
+REQS_FILE="$REPO_ROOT/python/requirements.txt"
+
+PYTHON="${PYTHON:-python3}"
+VENV_DIR="${VENV_DIR:-venv}"
+
+# ── Connext installation path ───────────────────────────────────────────────
+# Auto-detect NDDSHOME if not set.
+if [ -z "${NDDSHOME:-}" ]; then
+  for _d in /Applications /opt "$HOME"; do
+    [ -d "$_d/rti_connext_dds-7.7.0" ] && NDDSHOME="$_d/rti_connext_dds-7.7.0" && break
+  done
+  unset _d
+fi
+
+if [ -n "${NDDSHOME:-}" ] && [[ ! -d "$NDDSHOME" ]]; then
+    echo "ERROR: NDDSHOME is set but is not a directory: $NDDSHOME"
+    return 1 2>/dev/null || exit 1
+fi
+if [ -n "${NDDSHOME:-}" ]; then
+  export NDDSHOME
+fi
+export RTI_MONITORING2_ENABLE="${RTI_MONITORING2_ENABLE:-TRUE}"
+# ─────────────────────────────────────────────────────────────────────────
+
+# Require Python >= 3.14.3
+PY_VERSION=$($PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")')
+PY_OK=$($PYTHON -c 'import sys; print(1 if sys.version_info >= (3,14,3) else 0)')
+if [ "$PY_OK" -ne 1 ]; then
+  echo "ERROR: Python >= 3.14.3 is required (found $PY_VERSION from '$PYTHON')"
+  echo "  Set PYTHON to a supported interpreter, e.g.:"
+  echo "    PYTHON=python3.14 source setup.sourceme"
+  return 1 2>/dev/null || exit 1
+fi
+
+if [ ! -d "$VENV_DIR" ]; then
+  "$PYTHON" -m venv "$VENV_DIR" --prompt venv
+fi
+
+# shellcheck disable=SC1091
+source "$VENV_DIR/bin/activate"
+
+python -m pip install --upgrade pip setuptools wheel
+
+# macOS: pybullet's bundled zlib redefines fdopen which clashes with
+# the Apple SDK _stdio.h header.  This flag suppresses the TARGET_OS_*
+# macros that trigger the conflict.
+if [[ "$(uname)" == "Darwin" ]]; then
+  export CFLAGS="${CFLAGS:-} -fno-define-target-os-macros"
+fi
+
+# Install dependencies (rti.connext is available on PyPI)
+python -m pip install -r "$REQS_FILE"
+
+echo ""
+echo "Environment ready."
+echo "  Python:   $(which python)"
+echo "  venv:     $REPO_ROOT/$VENV_DIR"
+if [ -n "${NDDSHOME:-}" ]; then
+  echo "  NDDSHOME: $NDDSHOME"
+else
+  echo "  NDDSHOME: not set. The demo runs without a Connext installation;"
+  echo "            install Connext to regenerate types or run Persistence Service."
+fi
+if [ -z "${RTI_LICENSE_FILE:-}" ] && [ ! -f "${NDDSHOME:-/nonexistent}/rti_license.dat" ]; then
+  echo ""
+  echo "Before running the demo, point RTI_LICENSE_FILE at your license file:"
+  echo "  export RTI_LICENSE_FILE=/path/to/rti_license.dat"
+fi

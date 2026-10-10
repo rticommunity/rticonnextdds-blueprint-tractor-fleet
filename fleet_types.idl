@@ -1,0 +1,243 @@
+// SPDX-FileCopyrightText: 2026 Real-Time Innovations, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+/*
+ * fleet_types.idl — DDS type definitions for the tractor fleet blueprint
+ *
+ * See docs/DESIGN.md §2 (IDL Data Types) for the design rationale.
+ *
+ * NOTE: No 'timestamp' fields.  DDS provides source_timestamp and
+ * reception_timestamp in the SampleInfo metadata of every sample —
+ * adding an application-level timestamp would be redundant.
+ * Use sample.info.source_timestamp on the reader side.
+ *
+ * Generate Python type support (run ./python/types_generate.sh, or manually
+ * from repo root):
+ *   rtiddsgen -update typefiles -language python -d python fleet_types.idl
+ */
+
+// ═══════════════════════════════════════════════════════════════════════
+// Enums
+// ═══════════════════════════════════════════════════════════════════════
+
+@appendable
+enum TractorStatus {
+  @value(0) STATUS_UNKNOWN,
+  @value(1) STATUS_MOVING,
+  @value(2) STATUS_IDLE,      // parked / no movement, no avoidance
+  @value(3) STATUS_HOLDING,   // at goal, holding position, avoidance active
+  @value(4) STATUS_CHARGING   // docked at a charging station
+};
+
+@appendable
+enum TractorIntentType {
+  @value(0) INTENT_UNKNOWN,
+  @value(1) INTENT_FOLLOW_PATH,
+  @value(2) INTENT_GOTO,
+  @value(3) INTENT_IDLE,
+  @value(4) INTENT_CHARGE_QUEUE,   // queued, waiting for dock
+  @value(5) INTENT_CHARGE_DOCK     // rank 0, navigating to / on dock
+};
+
+@appendable
+enum Command {
+  @value(0) COMMAND_UNKNOWN,
+  @value(1) CMD_STOP,
+  @value(2) CMD_FOLLOW_PATH,
+  @value(3) CMD_GOTO,
+  @value(4) CMD_RESUME,
+  @value(5) CMD_SET_PATH,
+  @value(6) CMD_CHARGE   // operator-initiated: go charge now
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// Helper structs — reusable building blocks
+// ═══════════════════════════════════════════════════════════════════════
+
+@appendable
+struct Position {
+  double x;
+  double y;
+  double z;
+};
+
+@appendable
+struct Velocity3 {
+  double x;
+  double y;
+  double z;
+};
+
+@appendable
+struct Waypoint {
+  double x;
+  double y;
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// Tractor state topics — split by concern & rate
+// ═══════════════════════════════════════════════════════════════════════
+
+// KinematicState: 10 Hz, BEST_EFFORT / VOLATILE
+@appendable
+struct KinematicState {
+  @key string<64> tractor_id;
+  Position  position;
+  Velocity3 velocity;
+  double    heading;   // radians, atan2(vy, vx)
+};
+
+// OperationalState: on change, RELIABLE / TRANSIENT_LOCAL
+@appendable
+struct OperationalState {
+  @key string<64>  tractor_id;
+  TractorStatus    status;
+  double           battery_level;   // 0–100 %
+};
+
+// Intent: on change, RELIABLE / TRANSIENT_LOCAL
+@appendable
+struct Intent {
+  @key string<64>         tractor_id;
+  TractorIntentType       intent_type;
+  Position                target_position;
+  sequence<Waypoint,64>   path_waypoints;   // ordered waypoint list
+  int32                   path_index;       // current waypoint index
+};
+
+// Telemetry: 1 Hz, BEST_EFFORT / VOLATILE
+@appendable
+struct Telemetry {
+  @key string<64> tractor_id;
+  double cpu_usage;        // %
+  double memory_usage;     // %
+  double temperature;      // °C
+  double signal_strength;  // link quality 0–100 %
+};
+
+// VideoFrame: sample type of the LiveVideo topic; ~5 fps, BEST_EFFORT / VOLATILE
+@appendable
+struct VideoFrame {
+  @key string<64>           tractor_id;
+  sequence<octet,1000000>   frame_data;   // JPEG bytes
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// Command request-reply — used with rti.rpc.Requester/Replier
+//
+// No request_id field needed: rti.rpc correlates requests and replies
+// automatically via DDS SampleIdentity (writer GUID + sequence number).
+// ═══════════════════════════════════════════════════════════════════════
+
+// GotoParameters — used by CMD_GOTO, CMD_FOLLOW_PATH, CMD_RESUME
+@appendable
+struct GotoParameters {
+  double x;
+  double y;
+  double speed;   // 0 = use default
+};
+
+// SetPathParameters — used by CMD_SET_PATH
+@appendable
+struct SetPathParameters {
+  sequence<Waypoint,64> waypoints;
+};
+
+@appendable
+struct CommandRequest {
+  string<64>  tractor_id;   // target tractor, or "ALL" for every tractor (reserved ID)
+  Command     command;
+  @optional GotoParameters    goto_params;       // CMD_GOTO / CMD_FOLLOW_PATH / CMD_RESUME
+  @optional SetPathParameters set_path_params;   // CMD_SET_PATH only
+};
+
+@appendable
+struct CommandResponse {
+  string<64>        tractor_id;
+  boolean           success;
+  string<256>       description;
+  TractorStatus     resulting_status;
+  TractorIntentType resulting_intent;
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// Charging station — slot negotiation request-reply
+// Used with rti.rpc.Requester/Replier — same SampleIdentity correlation
+// as commands above.
+//
+// Two RPC pairs:
+//   SlotReserve → SlotAssignment  (reserve a queue slot)
+//   SlotRelease → SlotReleaseAck  (release when done)
+//
+// Tractors pick the best station locally (using StationStatus pub-sub)
+// and send a single directed SlotReserve.
+// ═══════════════════════════════════════════════════════════════════════
+
+@appendable
+struct SlotReserve {
+  string<64> tractor_id;
+  string<64> station_id;    // which station to reserve at
+  double     battery_level; // current % (informational)
+};
+
+@appendable
+struct SlotAssignment {
+  string<64> station_id;   // who sent this reply
+  string<64> slot_id;      // unique queue token
+  boolean    granted;      // true = slot reserved
+  int32      queue_rank;
+  double     dock_x;       // exact dock coordinates
+  double     dock_y;
+};
+
+@appendable
+struct SlotRelease {
+  string<64> tractor_id;
+  string<64> slot_id;
+  string<64> station_id;   // target station
+};
+
+@appendable
+struct SlotReleaseAck {
+  string<64> station_id;   // who sent this ack
+  string<64> slot_id;      // which slot
+  boolean    success;
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// Station status — pub-sub topic
+// RELIABLE / TRANSIENT_LOCAL / KEEP_LAST 1
+// ═══════════════════════════════════════════════════════════════════════
+
+@appendable
+struct QueueEntry {
+  string<64> tractor_id;
+  int32      rank;       // 0 = on dock, 1 = next, …
+  boolean    confirmed;  // true = tractor has confirmed the slot
+};
+
+@appendable
+struct StationStatus {
+  @key string<64>          station_id;
+  double                   dock_x;
+  double                   dock_y;
+  boolean                  is_occupied;
+  string<64>               docked_tractor_id;   // "" if free
+  sequence<QueueEntry,16>  queue;
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// CoveragePoint — on-change, RELIABLE / PERSISTENT
+//
+// Published by the tractor when actively working a path
+// (INTENT_FOLLOW_PATH + past first waypoint).  Distance-filtered at the
+// source (≥1 arena unit between samples).  The endpoint QoS retains bounded
+// per-tractor history, and Persistence Service stores it across restarts.
+// ═══════════════════════════════════════════════════════════════════════
+
+@appendable
+struct CoveragePoint {
+  @key string<64> tractor_id;
+  double x;
+  double y;
+};

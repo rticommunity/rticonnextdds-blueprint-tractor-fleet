@@ -1,0 +1,31 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: 2026 Real-Time Innovations, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+# Generate Python type support for the Connext DDS tractor fleet demo.
+# Runs rtiddsgen to produce fleet_types.py from ../fleet_types.idl.
+#
+# Usage:
+#   ./types_generate.sh
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# NDDSHOME is exported by setup.sourceme — source it first if not set.
+if [ -z "${NDDSHOME:-}" ]; then
+    echo "ERROR: NDDSHOME is not set. Source setup.sourceme first:"
+    echo "  source ../setup.sourceme"
+    exit 1
+fi
+
+RTIDDSGEN="$NDDSHOME/bin/rtiddsgen"
+if command -v rtiddsgen &>/dev/null; then
+    RTIDDSGEN=rtiddsgen
+elif [ ! -x "$RTIDDSGEN" ]; then
+    echo "ERROR: rtiddsgen not found at $RTIDDSGEN or on PATH."
+    exit 1
+fi
+
+echo "Generating DDS type support from ../fleet_types.idl (using $RTIDDSGEN)..."
+"$RTIDDSGEN" -update typefiles -language python -d . ../fleet_types.idl
+echo "  → fleet_types.py"
